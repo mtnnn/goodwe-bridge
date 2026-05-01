@@ -4,6 +4,8 @@ Tiny HTTP bridge that exposes a GoodWe inverter's local-LAN poweron / poweroff
 control over HTTP, so callers without UDP / Modbus support (HomeyScript,
 Node-RED in some configs, shell scripts, …) can drive the inverter.
 
+LAN-only by design — no auth. Don't expose it to the internet.
+
 ## Why
 
 The GoodWe SEMS cloud `SaveRemoteControlInverter` endpoint accepts
@@ -28,7 +30,7 @@ All responses are JSON. Success bodies start with `{"ok": true, …}`.
 Errors are uniformly `{"ok": false, "error": "<code>", "detail": "…"}` with
 HTTP status 4xx/5xx. Error codes:
 
-- `unauthorized` (401), `bad_request` (400), `busy` (409),
+- `bad_request` (400), `busy` (409),
 - `unreachable` (502), `inverter_error` (502), `timeout` (504),
 - `server_error` (500).
 
@@ -41,7 +43,7 @@ the inverter ACKed the UDP write — it does *not* mean the inverter is now in
 Normal mode. Wake-up requires sufficient PV input. Call `/status` ~90 s later
 to confirm the actual mode.
 
-## Configuration (env vars)
+## Configuration (env vars in `compose.yaml`)
 
 | Name           | Required | Default     | Notes |
 |----------------|----------|-------------|-------|
@@ -50,7 +52,6 @@ to confirm the actual mode.
 | `BRIDGE_PORT`  | no       | `8765`      | HTTP listen port (inside container) |
 | `LAN_TIMEOUT`  | no       | `2`         | UDP timeout (seconds) |
 | `LAN_RETRIES`  | no       | `3`         | UDP retries |
-| `BRIDGE_TOKEN` | no       | —           | If set, requires `Authorization: Bearer <token>` on every endpoint except `/health`. |
 
 ## Deploy on a NAS
 
@@ -61,14 +62,8 @@ to confirm the actual mode.
    git clone https://github.com/mtnnn/goodwe-bridge.git /volume1/docker/goodwe-bridge
    cd /volume1/docker/goodwe-bridge
    ```
-2. Configure (recommended — set a token):
-   ```sh
-   cp .env.example .env
-   echo "BRIDGE_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" >> .env
-   chmod 600 .env
-   ```
-3. Edit `compose.yaml` if your inverter isn't at `192.168.20.34`.
-4. Container Manager → Project → Create →
+2. Edit `compose.yaml` if your inverter isn't at `192.168.20.34`.
+3. Container Manager → Project → Create →
    - Path: `/volume1/docker/goodwe-bridge`
    - Source: *Use existing docker-compose.yml*, pick `compose.yaml`.
    - Build & start.
@@ -91,33 +86,29 @@ Compose Manager plugin → paste `compose.yaml`. Or hand-roll a Docker template.
 ```sh
 git clone https://github.com/mtnnn/goodwe-bridge.git
 cd goodwe-bridge
-cp .env.example .env  # then edit BRIDGE_TOKEN
 docker compose up -d --build
 docker compose logs -f goodwe-bridge
 ```
 
 ## Smoke tests
 
-Replace `<host>` with `127.0.0.1` (local) or your NAS IP, and `<token>` with
-`BRIDGE_TOKEN` if you set one (omit the `-H` line otherwise).
+Replace `<host>` with `127.0.0.1` (local) or your NAS IP.
 
 ```sh
-T='-H "Authorization: Bearer <token>"'
-
 curl -sS http://<host>:8765/health
 # {"ok":true,"status":"alive"}
 
-curl -sS $T http://<host>:8765/ready
+curl -sS http://<host>:8765/ready
 # {"ok":true,"model":"GW3000D-NS","serial":"..."}
 
-curl -sS $T http://<host>:8765/status
+curl -sS http://<host>:8765/status
 # {"ok":true,"work_mode_label":"Normal","ppv1":1840,...}
 
-curl -sS $T -X POST http://<host>:8765/poweron
+curl -sS -X POST http://<host>:8765/poweron
 # {"ok":true,"action":"poweron","work_mode_before":"Wait Mode","ppv1":12}
 
 # ~90s later, confirm transition:
-curl -sS $T http://<host>:8765/status
+curl -sS http://<host>:8765/status
 # work_mode_label should now be "Normal" (assuming sufficient PV)
 ```
 
@@ -126,18 +117,14 @@ curl -sS $T http://<host>:8765/status
 HomeyScript can `fetch` the bridge directly. Example for poweron:
 
 ```js
-const BRIDGE_URL   = 'http://192.168.20.10:8765/poweron'; // your NAS IP
-const BRIDGE_TOKEN = '';                                    // paste if set
-const TIMEOUT_MS   = 30000;
-
-const headers = { 'Content-Type': 'application/json' };
-if (BRIDGE_TOKEN) headers.Authorization = `Bearer ${BRIDGE_TOKEN}`;
+const BRIDGE_URL = 'http://192.168.20.10:8765/poweron'; // your NAS IP
+const TIMEOUT_MS = 30000;
 
 const ctrl = new AbortController();
 const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
 let body;
 try {
-  const r = await fetch(BRIDGE_URL, { method: 'POST', headers, signal: ctrl.signal });
+  const r = await fetch(BRIDGE_URL, { method: 'POST', signal: ctrl.signal });
   if (!r.ok) throw new Error(`bridge HTTP ${r.status}: ${await r.text()}`);
   body = await r.json();
 } finally {
@@ -158,8 +145,6 @@ accordingly.
 - **Night-time.** The inverter is fully off and unreachable on UDP. `/health`
   stays green so the container is *not* restart-looped overnight; `/status` and
   `/ready` return 502/504 with clear error JSON. This is intentional.
-- **Token leak prevention.** Keep `BRIDGE_TOKEN` in `.env`; never commit it.
-  `.env` is in `.gitignore` and `.dockerignore`.
 - **`goodwe` library version.** Pinned to `0.2.29` (D-NS Watts vs percent
   fix). Bumping requires re-verifying writes don't regress on this firmware.
 

@@ -6,8 +6,6 @@ services:
     restart: unless-stopped
     ports:
       - "8765:8765"
-    env_file:
-      - .env
     environment:
       GOODWE_HOST: "192.168.20.34"
       GOODWE_FAMILY: "DT"

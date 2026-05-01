@@ -7,7 +7,6 @@ UDP-Modbus (e.g. HomeyScript). Talks to the inverter on UDP 8899.
 from __future__ import annotations
 
 import asyncio
-import hmac
 import logging
 import os
 import sys
@@ -30,7 +29,6 @@ GOODWE_FAMILY = os.environ.get("GOODWE_FAMILY", "DT")
 LAN_TIMEOUT = env_int("LAN_TIMEOUT", 2)
 LAN_RETRIES = env_int("LAN_RETRIES", 3)
 BRIDGE_PORT = env_int("BRIDGE_PORT", 8765)
-BRIDGE_TOKEN = os.environ.get("BRIDGE_TOKEN") or None
 
 
 class HttpError(Exception):
@@ -46,14 +44,7 @@ def err_json(error: str, detail: str, status: int) -> web.Response:
 
 
 @web.middleware
-async def auth_middleware(request: web.Request, handler):
-    if BRIDGE_TOKEN and request.path != "/health":
-        header = request.headers.get("Authorization", "")
-        prefix = "Bearer "
-        if not header.startswith(prefix) or not hmac.compare_digest(
-            header[len(prefix) :], BRIDGE_TOKEN
-        ):
-            return err_json("unauthorized", "missing or invalid Bearer token", 401)
+async def log_middleware(request: web.Request, handler):
     t0 = time.time()
     try:
         resp = await handler(request)
@@ -170,7 +161,7 @@ async def on_cleanup(app: web.Application) -> None:
 
 
 def make_app() -> web.Application:
-    app = web.Application(middlewares=[auth_middleware])
+    app = web.Application(middlewares=[log_middleware])
     app["lock"] = asyncio.Lock()
     app["inv"] = None
     app.router.add_post("/poweron", handle_poweron)
@@ -192,9 +183,8 @@ def main() -> None:
         LOG.error("GOODWE_HOST env var is required")
         sys.exit(2)
     LOG.info(
-        "bridge starting: port=%s host=%s family=%s auth=%s",
+        "bridge starting: port=%s host=%s family=%s",
         BRIDGE_PORT, GOODWE_HOST, GOODWE_FAMILY,
-        "enabled" if BRIDGE_TOKEN else "disabled",
     )
     web.run_app(
         make_app(),
