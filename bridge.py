@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable
 
 import goodwe
 from aiohttp import web
+from goodwe.protocol import ModbusWriteCommand
 
 LOG = logging.getLogger("goodwe-bridge")
 
@@ -97,17 +98,24 @@ async def call_inverter(
         raise HttpError("inverter_error", f"{type(e).__name__}: {e}", 502)
 
 
-async def write_setting(app: web.Application, action: str, setting: str) -> dict[str, Any]:
+# goodwe DT family doesn't expose 'start'/'stop' as named settings, so
+# write the holding registers directly. 40330 = poweron, 40331 = poweroff.
+POWERON_REGISTER = 40330
+POWEROFF_REGISTER = 40331
+
+
+async def write_register(app: web.Application, action: str, register: int) -> dict[str, Any]:
     lock: asyncio.Lock = app["lock"]
     if lock.locked():
         raise HttpError("busy", "another write is in flight", 409)
     async with lock:
         async def do(inv: goodwe.Inverter) -> dict[str, Any]:
             rt = await inv.read_runtime_data()
-            await inv.write_setting(setting, 1)
+            await inv._read_from_socket(ModbusWriteCommand(inv.comm_addr, register, 1))
             return {
                 "ok": True,
                 "action": action,
+                "register": register,
                 "work_mode_before": rt.get("work_mode_label"),
                 "ppv1": rt.get("ppv1"),
             }
@@ -115,12 +123,12 @@ async def write_setting(app: web.Application, action: str, setting: str) -> dict
 
 
 async def handle_poweron(request: web.Request) -> web.Response:
-    payload = await write_setting(request.app, "poweron", "start")
+    payload = await write_register(request.app, "poweron", POWERON_REGISTER)
     return web.json_response(payload)
 
 
 async def handle_poweroff(request: web.Request) -> web.Response:
-    payload = await write_setting(request.app, "poweroff", "stop")
+    payload = await write_register(request.app, "poweroff", POWEROFF_REGISTER)
     return web.json_response(payload)
 
 
